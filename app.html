@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mastermind - crack the code</title>
+<style>
+  :root { --bg:#14181d; --panel:#1e242b; --line:#2c343d; --text:#e8edf2; --dim:#8b98a5; --accent:#e8b64c; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; min-height:100vh; display:flex; flex-direction:column; align-items:center; padding:28px 14px 40px; }
+  h1 { font-size:30px; letter-spacing:.5px; }
+  .sub { color:var(--dim); margin:6px 0 18px; font-size:14px; }
+  .board { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px 18px; }
+  .secret { display:flex; gap:10px; align-items:center; justify-content:center; margin-bottom:12px; padding-bottom:12px; border-bottom:1px dashed var(--line); }
+  .peg { width:34px; height:34px; border-radius:50%; border:2px solid rgba(255,255,255,.16); }
+  .peg.hidden-peg { background:#39424c; color:var(--dim); display:flex; align-items:center; justify-content:center; font-size:16px; font-weight:700; }
+  .row { display:flex; align-items:center; gap:14px; padding:6px 8px; border-radius:10px; }
+  .row.active { background:rgba(232,182,76,.07); outline:1px solid rgba(232,182,76,.35); }
+  .row .num { width:18px; color:var(--dim); font-size:12px; text-align:right; }
+  .slots { display:flex; gap:10px; }
+  .slot { width:34px; height:34px; border-radius:50%; background:#12161a; border:2px dashed #39424c; cursor:default; }
+  .row.active .slot { cursor:pointer; }
+  .row.active .slot.filled { border-style:solid; }
+  .minis { display:grid; grid-template-columns:repeat(2,12px); gap:4px; margin-left:4px; }
+  .mini { width:12px; height:12px; border-radius:50%; background:#12161a; border:1px solid #39424c; }
+  .mini.exact { background:#f2f5f8; border-color:#f2f5f8; }
+  .mini.partial { background:#6d7885; }
+  .palette { display:flex; gap:12px; margin-top:18px; }
+  .palette .peg { cursor:pointer; transition:transform .08s; }
+  .palette .peg:hover { transform:scale(1.12); }
+  .actions { display:flex; gap:10px; margin-top:16px; }
+  button { background:var(--accent); color:#14181d; border:none; border-radius:9px; padding:10px 20px; font-size:15px; font-weight:700; cursor:pointer; }
+  button:disabled { background:#39424c; color:#7a858f; cursor:not-allowed; }
+  button.ghost { background:transparent; color:var(--dim); border:1px solid var(--line); }
+  #msg { margin-top:14px; min-height:22px; font-size:15px; text-align:center; }
+  #stats { margin-top:6px; color:var(--dim); font-size:13px; }
+  .rules { margin-top:18px; color:var(--dim); font-size:13px; max-width:340px; line-height:1.5; }
+  a { color:var(--accent); text-decoration:none; }
+  .red{background:radial-gradient(circle at 32% 30%,#ff8a80,#d32f2f)} .orange{background:radial-gradient(circle at 32% 30%,#ffcc80,#ef6c00)} .yellow{background:radial-gradient(circle at 32% 30%,#fff59d,#fbc02d)} .green{background:radial-gradient(circle at 32% 30%,#a5d6a7,#388e3c)} .blue{background:radial-gradient(circle at 32% 30%,#90caf9,#1976d2)} .purple{background:radial-gradient(circle at 32% 30%,#ce93d8,#7b1fa2)}
+</style>
+</head>
+<body>
+<h1>Mastermind</h1>
+<div class="sub">crack the 4-color code in 10 guesses</div>
+
+<div class="board">
+  <div class="secret" id="secret"></div>
+  <div id="rows"></div>
+  <div class="palette" id="palette"></div>
+  <div class="actions">
+    <button id="check" disabled>Check</button>
+    <button class="ghost" id="new">New game</button>
+  </div>
+  <div id="msg"></div>
+  <div id="stats"></div>
+</div>
+
+<div class="rules">
+  The computer hides a code of 4 colored pegs (repeats allowed). Fill a row from the palette,
+  then press Check. A bright peg means right color in the right spot; a gray peg means the right
+  color in the wrong spot. Peg positions don't reveal which slot they refer to.
+  <br><br><a href="index.html">&larr; about</a>
+</div>
+
+<script src="engine.js?v=1"></script>
+<script>
+(function () {
+  var LEN = 4, MAXROWS = 10;
+  var code, guesses, feedback, status; // status: 'playing' | 'won' | 'lost'
+
+  var rowsEl = document.getElementById('rows');
+  var secretEl = document.getElementById('secret');
+  var paletteEl = document.getElementById('palette');
+  var checkBtn = document.getElementById('check');
+  var msgEl = document.getElementById('msg');
+  var statsEl = document.getElementById('stats');
+
+  function loadStats() {
+    try { return JSON.parse(localStorage.getItem('mastermind-stats')) || { played: 0, won: 0 }; }
+    catch (e) { return { played: 0, won: 0 }; }
+  }
+  function saveStats(s) { try { localStorage.setItem('mastermind-stats', JSON.stringify(s)); } catch (e) {} }
+
+  function newGame() {
+    code = Mastermind.createCode(Math.random, LEN, Mastermind.COLORS.length);
+    guesses = [];
+    feedback = [];
+    status = 'playing';
+    msgEl.textContent = '';
+    startRow();
+    render();
+  }
+
+  function currentGuess() { return guesses[guesses.length - 1]; }
+
+  function renderSecret(reveal) {
+    secretEl.innerHTML = '';
+    for (var i = 0; i < LEN; i++) {
+      var d = document.createElement('div');
+      if (reveal) d.className = 'peg ' + Mastermind.COLORS[code[i]];
+      else { d.className = 'peg hidden-peg'; d.textContent = '?'; }
+      secretEl.appendChild(d);
+    }
+  }
+
+  function render() {
+    renderSecret(status !== 'playing');
+    rowsEl.innerHTML = '';
+    for (var r = 0; r < MAXROWS; r++) {
+      var row = document.createElement('div');
+      var isActive = status === 'playing' && r === guesses.length - 1;
+      row.className = 'row' + (isActive ? ' active' : '');
+      var num = document.createElement('div');
+      num.className = 'num'; num.textContent = r + 1;
+      row.appendChild(num);
+      var slots = document.createElement('div');
+      slots.className = 'slots';
+      for (var c = 0; c < LEN; c++) {
+        var s = document.createElement('div');
+        s.className = 'slot';
+        var g = guesses[r];
+        if (g && g[c] !== undefined && g[c] !== null) {
+          s.classList.add('filled', Mastermind.COLORS[g[c]]);
+        }
+        if (isActive) (function (idx) {
+          s.addEventListener('click', function () {
+            var cur = currentGuess();
+            if (cur[idx] !== null) { cur[idx] = null; render(); }
+          });
+        })(c);
+        slots.appendChild(s);
+      }
+      row.appendChild(slots);
+      var minis = document.createElement('div');
+      minis.className = 'minis';
+      var fb = feedback[r];
+      for (var m = 0; m < LEN; m++) {
+        var md = document.createElement('div');
+        md.className = 'mini';
+        if (fb) {
+          if (m < fb.exact) md.classList.add('exact');
+          else if (m < fb.exact + fb.partial) md.classList.add('partial');
+        }
+        minis.appendChild(md);
+      }
+      row.appendChild(minis);
+      rowsEl.appendChild(row);
+    }
+    var cur = currentGuess();
+    checkBtn.disabled = !(status === 'playing' && cur && cur.every(function (v) { return v !== null; }));
+    var st = loadStats();
+    statsEl.textContent = 'won ' + st.won + ' of ' + st.played + ' games';
+  }
+
+  function startRow() { guesses.push([null, null, null, null]); }
+
+  function check() {
+    var cur = currentGuess();
+    if (status !== 'playing' || !cur || cur.some(function (v) { return v === null; })) return;
+    var score = Mastermind.scoreGuess(code, cur);
+    feedback[guesses.length - 1] = score;
+    var st = loadStats();
+    if (Mastermind.isWin(score, LEN)) {
+      status = 'won';
+      st.played++; st.won++; saveStats(st);
+      msgEl.textContent = 'Cracked it in ' + (guesses.length) + ' ' + (guesses.length === 1 ? 'guess' : 'guesses') + '!';
+    } else if (guesses.length >= MAXROWS) {
+      status = 'lost';
+      st.played++; saveStats(st);
+      msgEl.textContent = 'Out of guesses - the code is revealed above.';
+    } else {
+      startRow();
+    }
+    render();
+  }
+
+  Mastermind.COLORS.forEach(function (name, idx) {
+    var p = document.createElement('div');
+    p.className = 'peg ' + name;
+    p.setAttribute('aria-label', name);
+    p.addEventListener('click', function () {
+      if (status !== 'playing') return;
+      var cur = currentGuess();
+      for (var i = 0; i < LEN; i++) {
+        if (cur[i] === null) { cur[i] = idx; render(); return; }
+      }
+    });
+    paletteEl.appendChild(p);
+  });
+
+  checkBtn.addEventListener('click', check);
+  document.getElementById('new').addEventListener('click', newGame);
+
+  // test hook
+  window.__mm = {
+    state: function () { return { code: code.slice(), guesses: JSON.parse(JSON.stringify(guesses)), feedback: feedback.slice(), status: status }; },
+    setCode: function (c) { code = c.slice(); }
+  };
+
+  newGame();
+})();
+</script>
+</body>
+</html>
